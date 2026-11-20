@@ -1,0 +1,14 @@
+{
+  "name": "jira-tabs",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Installable tabbed Jira client: each issue opens once, and opening it again switches to its tab.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "demo": "DEMO=1 node server.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

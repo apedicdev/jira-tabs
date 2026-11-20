@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "Jira Tabs",
+  "short_name": "Jira Tabs",
+  "description": "A tabbed Jira client: every issue opens in one tab, and opening it again switches to that tab.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "background_color": "#ffffff",
+  "theme_color": "#e8ebf0",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "launch_handler": { "client_mode": ["focus-existing", "auto"] },
+  "protocol_handlers": [{ "protocol": "web+jira", "url": "/?open=%s" }]
+}

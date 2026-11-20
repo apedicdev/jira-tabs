@@ -1,0 +1,16 @@
+{
+  "jira": {
+    "site": "",
+    "pinned": ["/jira/for-you"],
+    "sleepUnusedTabsAfterMinutes": 5,
+    "closeUnusedTabsAfterMinutes": 10,
+    "preloadLinks": true
+  },
+  "gitlab": {
+    "site": "https://gitlab.com",
+    "pinned": [],
+    "sleepUnusedTabsAfterMinutes": 5,
+    "closeUnusedTabsAfterMinutes": 10,
+    "preloadLinks": true
+  }
+}

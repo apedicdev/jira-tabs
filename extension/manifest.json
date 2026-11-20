@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Jira Tab Reuse",
+  "version": "1.1.0",
+  "description": "One tab per Jira issue: issue links open in their own tab, and an issue that's already open switches to its tab.",
+  "minimum_chrome_version": "116",
+  "host_permissions": ["https://*.atlassian.net/*"],
+  "permissions": ["storage"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["https://*.atlassian.net/*"], "js": ["app-icons.js", "content.js"], "run_at": "document_start" }
+  ],
+  "action": {
+    "default_title": "Jira tab reuse is on. Click to turn it off.",
+    "default_icon": { "16": "icons/16.png", "32": "icons/32.png" }
+  },
+  "icons": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" }
+}

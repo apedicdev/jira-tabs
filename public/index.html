@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Jira Tabs</title>
+  <meta name="description" content="A tabbed Jira client: every issue opens in one tab, and opening it again switches to that tab.">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e8ebf0">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#101214">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <button class="icon-btn" id="sidebar-toggle" type="button" title="Show or hide the issue list (Alt+B)" aria-label="Show or hide the issue list" aria-controls="sidebar">
+        <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2"/><path d="M6 2.75v10.5"/></svg>
+      </button>
+      <span class="brand-name">Jira Tabs</span>
+    </div>
+    <div class="tabstrip" id="tabs" role="tablist" aria-label="Open issues"></div>
+    <button class="icon-btn newtab" id="new-tab" type="button" title="Open an issue (Ctrl+K)" aria-label="Open an issue">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
+    </button>
+    <div class="drag-space"></div>
+  </header>
+
+  <aside class="sidebar" id="sidebar" aria-label="Find issues">
+    <form class="search" id="search-form" role="search">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+      <input id="search-input" type="search" placeholder="Text, JQL or an issue key" autocomplete="off" spellcheck="false" aria-label="Search issues, or type a key to open it">
+      <kbd>/</kbd>
+    </form>
+    <div class="filters" id="filters" aria-label="Saved filters"></div>
+    <div class="results-meta" id="results-meta" aria-live="polite"></div>
+    <ul class="results" id="results" aria-label="Search results"></ul>
+    <footer class="whoami" id="whoami"></footer>
+  </aside>
+
+  <main class="content" id="content">
+    <div class="empty" id="empty" hidden>
+      <div class="empty-inner">
+        <img src="/icons/icon.svg" alt="" width="56" height="56">
+        <h2>No issue open</h2>
+        <p>Pick an issue from the list or type its key. An issue that already has a tab is never opened twice: you are taken to its tab instead.</p>
+        <dl class="shortcuts">
+          <dt><kbd>/</kbd> or <kbd data-mod>Ctrl</kbd><kbd>K</kbd></dt><dd>Search, or open a key</dd>
+          <dt><kbd data-mod>Ctrl</kbd>-click or middle-click</dt><dd>Open in a background tab</dd>
+          <dt><kbd data-alt>Alt</kbd><kbd>1</kbd>…<kbd>9</kbd></dt><dd>Go to tab (9 = last)</dd>
+          <dt><kbd data-alt>Alt</kbd><kbd>[</kbd> <kbd>]</kbd></dt><dd>Previous / next tab</dd>
+          <dt><kbd data-alt>Alt</kbd><kbd>W</kbd></dt><dd>Close tab</dd>
+          <dt><kbd data-alt>Alt</kbd><kbd>Shift</kbd><kbd>T</kbd></dt><dd>Reopen closed tab</dd>
+          <dt><kbd data-alt>Alt</kbd><kbd>R</kbd></dt><dd>Refresh issue</dd>
+          <dt><kbd data-alt>Alt</kbd><kbd>B</kbd></dt><dd>Show or hide the issue list</dd>
+        </dl>
+      </div>
+    </div>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

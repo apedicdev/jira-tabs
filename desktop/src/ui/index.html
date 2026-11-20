@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src https: data:;">
+  <title></title>
+  <link rel="stylesheet" href="ui.css">
+</head>
+<body>
+  <header id="titlebar">
+    <div id="tabs" role="tablist" aria-label="Tabs">
+      <button id="new-tab" class="icon" title="New tab (⌘T)" aria-label="New tab">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <nav id="toolbar">
+    <button id="back" class="icon" title="Back (⌘[)" aria-label="Back">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8H3m4-4L3 8l4 4"/></svg>
+    </button>
+    <button id="forward" class="icon" title="Forward (⌘])" aria-label="Forward">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg>
+    </button>
+    <button id="reload" class="icon" title="Reload (⌘R)" aria-label="Reload">
+      <svg class="reload" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v3h-3"/></svg>
+      <svg class="stop" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+    </button>
+    <form id="address-form" autocomplete="off">
+      <input id="address" spellcheck="false" placeholder="" aria-label="Address or search">
+    </form>
+    <form id="findbar" hidden autocomplete="off">
+      <input id="find-input" spellcheck="false" placeholder="Find in page" aria-label="Find in page">
+      <span id="find-count" aria-live="polite"></span>
+      <button type="button" id="find-prev" class="icon" title="Previous (⇧⌘G)" aria-label="Previous match">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 10l4-4 4 4"/></svg>
+      </button>
+      <button type="button" id="find-next" class="icon" title="Next (⌘G)" aria-label="Next match">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>
+      </button>
+      <button type="button" id="find-close" class="icon" title="Close (Esc)" aria-label="Close find">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+      </button>
+    </form>
+    <button id="pin" class="icon" title="Pin tab (⇧⌘P)" aria-label="Pin tab" aria-pressed="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2.5h4M7 2.5v4L4.5 9h7L9 6.5v-4M8 9v4.5"/></svg>
+    </button>
+    <button id="copy-link" class="icon" title="Copy link (⇧⌘C)" aria-label="Copy link">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 9.5l3-3M7 4.5l1-1a2.8 2.8 0 0 1 4 4l-1 1M9 11.5l-1 1a2.8 2.8 0 0 1-4-4l1-1"/></svg>
+    </button>
+    <button id="open-browser" class="icon" title="Open in browser (⇧⌘O)" aria-label="Open in browser">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 3h4v4M13 3L7.5 8.5M11 9.5V13H3V5h3.5"/></svg>
+    </button>
+  </nav>
+
+  <main id="setup" hidden>
+    <form id="setup-form" autocomplete="off">
+      <h1 id="setup-title"></h1>
+      <label for="site-input" id="site-label"></label>
+      <input id="site-input" spellcheck="false">
+      <p id="setup-error" role="alert"></p>
+      <div class="setup-actions">
+        <button type="button" id="setup-cancel">Cancel</button>
+        <button type="submit" class="primary">Continue</button>
+      </div>
+    </form>
+  </main>
+
+  <script src="ui.js"></script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+node_modules/
+dist/
+# Your own site and pins for the apps you build (see README)
+config.local.json
