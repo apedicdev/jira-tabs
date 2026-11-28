@@ -1,7 +1,7 @@
 {
   "name": "jira-tabs-desktop",
-  "productName": "Jira Tabs",
-  "version": "1.0.0",
+  "productName": "Jira Tabs 2",
+  "version": "2.0.0",
   "description": "Jira (with Confluence) or GitLab in its own app, with one tab per issue, merge request or page.",
   "main": "src/main.js",
   "private": true,
@@ -17,8 +17,8 @@
     "electron-builder": "26.18.1"
   },
   "build": {
-    "appId": "io.github.apedicdev.jira-tabs",
-    "productName": "Jira Tabs",
+    "appId": "io.github.apedicdev.jira-tabs-2",
+    "productName": "Jira Tabs 2",
     "files": [
       "src/**/*",
       "config.json",
@@ -31,15 +31,15 @@
     },
     "protocols": [
       {
-        "name": "Jira Tabs link",
+        "name": "Jira Tabs 2 link",
         "schemes": [
-          "jira-tabs"
+          "jira-tabs-2"
         ]
       }
     ],
     "mac": {
       "category": "public.app-category.productivity",
-      "icon": "build/jira/icon.icns",
+      "icon": "build/jira-2/icon.icns",
       "identity": "-",
       "hardenedRuntime": false,
       "target": [
@@ -53,11 +53,11 @@
       ]
     },
     "win": {
-      "icon": "build/jira/icon.png",
+      "icon": "build/jira-2/icon.png",
       "target": "nsis"
     },
     "dmg": {
-      "title": "Jira Tabs"
+      "title": "Jira Tabs 2"
     }
   }
 }

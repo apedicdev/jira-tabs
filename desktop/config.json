@@ -2,6 +2,7 @@
   "jira": {
     "site": "",
     "pinned": ["/jira/for-you"],
+    "lightIssues": true,
     "sleepUnusedTabsAfterMinutes": 5,
     "closeUnusedTabsAfterMinutes": 10,
     "preloadLinks": true
@@ -9,6 +10,7 @@
   "gitlab": {
     "site": "https://gitlab.com",
     "pinned": [],
+    "lightIssues": true,
     "sleepUnusedTabsAfterMinutes": 5,
     "closeUnusedTabsAfterMinutes": 10,
     "preloadLinks": true

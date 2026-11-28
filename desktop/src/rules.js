@@ -31,12 +31,15 @@ const JIRA_KEY = /^\s*([a-z][a-z0-9_]*-\d+)\s*$/i;
 const CONFLUENCE_CONTENT =
   /^\/wiki\/spaces\/[^/]+\/(?:pages(?:\/edit-v2)?|blog(?:\/\d{4}\/\d{2}\/\d{2})?|whiteboard|database)\/(\d+)(?:\/|$)/;
 const CONFLUENCE_OLD = /^\/wiki\/pages\/(?:viewpage|editpage)\.action$/;
+// The site's own sign-in steps: Jira sends you to /login.jsp and /login when you're signed out,
+// and back through /SetCST afterwards.
+const JIRA_SIGN_IN = /^\/(?:login(?:\.jsp)?|logout|SetCST(?:\/initiate)?|wiki\/(?:login|logout)\.action)\/?$/i;
 
 const jira = {
   id: 'jira',
   name: 'Jira',
-  productName: 'Jira Tabs',
-  protocol: 'jira-tabs',
+  productName: 'Jira Tabs 2', // version 2: a separate app from Jira Tabs, so both can be installed
+  protocol: 'jira-tabs-2',
   addressPlaceholder: 'Issue key, Jira or Confluence address, or search',
   siteLabel: 'Your Jira address',
   sitePlaceholder: 'your-company.atlassian.net',
@@ -55,6 +58,11 @@ const jira = {
   // page views, which page owners can see, so its pages are only loaded when you open them.
   preload: (u) => JIRA_ISSUE.test(u.pathname),
   preloadLabel: 'Load Issues When Pointing at Links',
+  signIn: (u) => JIRA_SIGN_IN.test(u.pathname),
+  // Items the app can show in its own light view, drawn from Jira's data: Jira issues.
+  light: (u) => JIRA_ISSUE.exec(u.pathname)?.[1].toUpperCase() ?? null,
+  lightKey: /^[A-Z][A-Z0-9_]*-\d+$/,
+  lightLabel: 'Open Issues in Light View',
   reference(text, site) {
     const m = JIRA_KEY.exec(text);
     return m ? `${site}/browse/${m[1].toUpperCase()}` : null;
@@ -71,6 +79,9 @@ const GITLAB_ITEM = /^\/(.+?)\/(?:-\/)?(issues|merge_requests|work_items|epics)\
 const GITLAB_REF = /^([\w.-]+(?:\/[\w.-]+)+)([#!])(\d+)$/; // group/project#12, group/project!34
 const GITLAB_EPIC_REF = /^([\w.-]+(?:\/[\w.-]+)*)&(\d+)$/; // group&5
 const GITLAB_SHORT_REF = /^([#!])(\d+)$/; // #12 or !34 in the project you're looking at
+// An issue, work item or merge request's own page (not its changes, commits or pipelines tab).
+const GITLAB_LIGHT = /^\/(\w[\w.-]*(?:\/\w[\w.-]*)+)\/-\/(issues|merge_requests|work_items)\/(\d+)\/?$/;
+const GITLAB_SIGN_IN = /^\/users\/(?:sign_in|sign_out|auth|password|unlock|confirmation|two_factor_auth\w*|identity_verification)(?:\/|$)/;
 
 const projectOf = (url) => {
   const u = parse(url);
@@ -81,8 +92,8 @@ const projectOf = (url) => {
 const gitlab = {
   id: 'gitlab',
   name: 'GitLab',
-  productName: 'GitLab Tabs',
-  protocol: 'gitlab-tabs',
+  productName: 'GitLab Tabs 2', // version 2: a separate app from GitLab Tabs, so both can be installed
+  protocol: 'gitlab-tabs-2',
   addressPlaceholder: 'group/project!12, #34, a GitLab address or search',
   siteLabel: 'Your GitLab address',
   sitePlaceholder: 'gitlab.com',
@@ -106,6 +117,16 @@ const gitlab = {
   // Every item (issues, merge requests, epics) is loaded ahead when you point at a link to it.
   preload: (u) => !!gitlab.item(u),
   preloadLabel: 'Load Issues and Merge Requests When Pointing at Links',
+  signIn: (u) => GITLAB_SIGN_IN.test(u.pathname),
+  // Items the app can show in its light view: issues (and other project work items) as
+  // "group/project#12", merge requests as "group/project!34".
+  light(u) {
+    const m = GITLAB_LIGHT.exec(u.pathname);
+    if (!m || m[1].startsWith('groups/')) return null;
+    return `${m[1]}${m[2] === 'merge_requests' ? '!' : '#'}${m[3]}`;
+  },
+  lightKey: /^\w[\w.-]*(?:\/\w[\w.-]*)+[#!]\d+$/,
+  lightLabel: 'Open Issues and Merge Requests in Light View',
   reference(text, site, currentUrl) {
     let m = GITLAB_REF.exec(text);
     if (m) return `${site}/${m[1]}/-/${m[2] === '!' ? 'merge_requests' : 'issues'}/${m[3]}`;
@@ -148,6 +169,18 @@ function createRules(profileId, siteInput) {
       const u = parse(url);
       return onSite(u) ? profile.item(u)?.label ?? null : null;
     },
+    // The site's sign-in pages, which a pinned tab goes through when you're signed out.
+    isSignInPage(url) {
+      const u = parse(url);
+      return onSite(u) && !!profile.signIn?.(u);
+    },
+    // Whether this app has a light view, and the issue key of an address it can show there.
+    canLight: !!profile.light,
+    lightKeyOf(url) {
+      const u = parse(url);
+      return onSite(u) && profile.light ? profile.light(u) : null;
+    },
+    isLightKey: (key) => !!profile.lightKey?.test(String(key || '')),
     // Whether this app loads items ahead at all, and whether this address is one of them.
     canPreload: !!profile.preload,
     isPreloadable(url) {
@@ -174,7 +207,7 @@ function createRules(profileId, siteInput) {
       if (u.protocol !== `${profile.protocol}:` || !site) return null;
       const url = u.searchParams.get('url');
       if (url) return rules.isInApp(url) ? parse(url).href : null;
-      // The "host" part of jira-tabs://ABC-1 is lower-cased by URL parsing; references don't care.
+      // The "host" part of jira-tabs-2://ABC-1 is lower-cased by URL parsing; references don't care.
       const rest = decodeURIComponent(`${u.hostname}${u.pathname}${u.hash}`).replace(/^\/+|\/+$/g, '').replace(/^browse\//i, '');
       return profile.reference(rest, site, null);
     },

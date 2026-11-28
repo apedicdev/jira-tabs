@@ -20,12 +20,24 @@
 //   - Pointing at a link to an item starts loading it out of sight, so its tab shows at once
 //     when you click (Jira issues, but not Confluence pages; GitLab issues, merge requests and epics).
 //   - Sign-in forms can be filled from 1Password (password-manager.js).
+//   - Version 2: Jira issues, and GitLab issues and merge requests, open as light tabs. Instead of
+//     a whole page each, they share one small page of the app's own (light/), drawn from the
+//     site's data (jira-api.js, gitlab-api.js), which takes a fraction of the memory. "Open full
+//     Jira" / "Open full GitLab" (⇧⌘J) turns a light tab into the real page.
 
-const { app, BrowserWindow, WebContentsView, Menu, ipcMain, shell, session, clipboard, nativeTheme, dialog } = require('electron');
+const { app, BrowserWindow, WebContentsView, Menu, ipcMain, shell, session, clipboard, nativeTheme, dialog, protocol } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { PROFILES, createRules, normalizeSite } = require('./rules');
 const passwords = require('./password-manager');
+const { createJiraApi } = require('./jira-api');
+const { createGitlabApi } = require('./gitlab-api');
+
+// The light view's own page, and images from the Jira or GitLab site shown in it.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'jira-tabs-light', privileges: { standard: true, secure: true } },
+  { scheme: 'site-media', privileges: { standard: true, secure: true } },
+]);
 
 // Which app this is: set at build time (package.json "appProfile"), or APP_PROFILE when run
 // from source.
@@ -36,6 +48,7 @@ app.setPath('userData', process.env.TABS_USER_DATA || path.join(app.getPath('app
 
 const PROTOCOL = profile.protocol;
 const PARTITION = `persist:${profile.id}`;
+const LIGHT_PARTITION = 'light'; // the light view: no cookies of its own, nothing kept
 const TOP = 78; // height of the tab strip and toolbar
 const IS_MAC = process.platform === 'darwin';
 const TEST = process.env.TABS_TEST === '1';
@@ -88,10 +101,12 @@ let sleepAfterMinutes =
   validMinutes(settings.sleepUnusedTabsAfterMinutes) ?? validMinutes(defaults.sleepUnusedTabsAfterMinutes) ?? 5;
 // Load an issue or merge request as soon as you point at a link to it.
 let preloadLinks = settings.preloadLinks ?? defaults.preloadLinks ?? true;
+// Open issues (and GitLab merge requests) as light tabs.
+let lightIssues = rules.canLight && (settings.lightIssues ?? defaults.lightIssues ?? true);
 
 const saveSettings = () => writeJson(file('settings.json'), {
   site, pinned: pinnedUrls, closeUnusedTabsAfterMinutes: closeAfterMinutes,
-  sleepUnusedTabsAfterMinutes: sleepAfterMinutes, preloadLinks,
+  sleepUnusedTabsAfterMinutes: sleepAfterMinutes, preloadLinks, lightIssues,
 });
 
 // The other app of the pair, to hand its links to when it's installed.
@@ -126,7 +141,8 @@ function keyOf(url) {
 
 let win = null;
 // Each tab: { id, view, url, title, favicon, loading, openerId, loadedOnce, navIndex,
-//             ignoreNavUntil, untouched, pinned, pinUrl, lastSeen, closing }
+//             ignoreNavUntil, untouched, pinned, pinUrl, lastSeen, closing, light }
+// A light tab has no view of its own (view: null): the shared light view shows it.
 let tabs = [];
 let activeId = null;
 let nextId = 1;
@@ -140,6 +156,8 @@ const tabById = (id) => tabs.find((t) => t.id === id);
 const activeTab = () => tabById(activeId);
 const tabOf = (wc) => tabs.find((t) => t.view?.webContents === wc);
 const pinnedCount = () => tabs.filter((t) => t.pinned).length;
+// What a tab shows: its own page, or the light view for a light tab.
+const pageWc = (t) => (t?.light ? (lightView && !lightView.webContents.isDestroyed() ? lightView.webContents : null) : t?.view?.webContents) || null;
 
 function createWindow() {
   const saved = readJson(file('session.json'), {});
@@ -177,11 +195,16 @@ function createWindow() {
   win.on('closed', () => {
     for (const key of [...preloaded.keys()]) dropPreloaded(key);
     for (const t of tabs) t.view?.webContents.close();
+    if (lightView && !lightView.webContents.isDestroyed()) lightView.webContents.close();
+    lightView = null;
+    lightReady = null;
     win = null;
     tabs = [];
     activeId = null;
   });
   win.webContents.on('did-finish-load', () => {
+    // The page still counts as loading here, so "loaded" is our own flag: links waiting to open
+    // would otherwise go straight back into the queue, and this loop would never end.
     uiReady = true;
     if (!site) return showSetup(true);
     if (!tabs.length) restoreTabs(saved);
@@ -232,7 +255,10 @@ function detachView(view) {
 
 const pickFavicon = (favicons) => favicons.find((f) => /^(https:|data:image\/)/.test(f)) || null;
 
-function addTab(url, { index = tabs.length, activate = true, openerId = null, untouched = false, pinned = false, asleep = false, title = '' } = {}) {
+// An issue opens as a light tab (version 2), unless `full`. Light tabs have no page of their own,
+// so they never sleep.
+function addTab(url, { index = tabs.length, activate = true, openerId = null, untouched = false, pinned = false, asleep = false, title = '', full = false } = {}) {
+  if (lightIssues && !pinned && !full && rules.lightKeyOf(url)) return addLightTab(url, { index, activate, openerId, title });
   const first = pinned ? 0 : pinnedCount();
   const last = pinned ? pinnedCount() : tabs.length;
   if (asleep && !pinned) {
@@ -271,10 +297,21 @@ function addTab(url, { index = tabs.length, activate = true, openerId = null, un
   return tab;
 }
 
+// Whether going to this address takes a pinned tab off its page (it then opens in a new tab
+// instead). The site's sign-in pages don't: signed out, the pinned page sends you through them
+// and back, and that has to happen in the pinned tab itself.
+const leavesPin = (tab, url) =>
+  tab.pinned && rules.isSitePage(url) && !rules.isSignInPage(url) && pagePath(url) !== pagePath(tab.pinUrl);
+// Whether this is another item than the one the tab shows (so it belongs in its own tab). A
+// pinned tab's own page isn't, even while the tab is away from it, e.g. on the sign-in page.
+const otherItem = (tab, url, current = tab.url) => {
+  const key = keyOf(url);
+  return !!key && key !== keyOf(current) && !(tab.pinned && pagePath(url) === pagePath(tab.pinUrl));
+};
+
 function wireTab(tab) {
   const wc = tab.view.webContents;
   const navIndex = () => wc.navigationHistory.getActiveIndex();
-  const leavesPin = (url) => tab.pinned && rules.isSitePage(url) && pagePath(url) !== pagePath(tab.pinUrl);
 
   wc.setWindowOpenHandler((details) => onWindowOpen(tab, details));
 
@@ -284,8 +321,7 @@ function wireTab(tab) {
     if (tab.untouched || !rules.isSitePage(tab.url)) return;
     // An item doesn't replace a page of the site: it gets its own tab, or its open tab comes
     // forward. A pinned tab doesn't leave its page.
-    const key = keyOf(url);
-    if ((key && key !== keyOf(tab.url)) || (tab.loadedOnce && leavesPin(url))) {
+    if (otherItem(tab, url) || (tab.loadedOnce && leavesPin(tab, url))) {
       event.preventDefault();
       openUrl(url, { from: tab, newTab: true });
     }
@@ -303,11 +339,10 @@ function wireTab(tab) {
     const before = tab.url;
     const beforeIndex = tab.navIndex;
     const pushed = navIndex() > beforeIndex;
-    const key = keyOf(url);
     // The site moved this tab to another item (or a pinned tab off its page) without a link we
     // caught: put this tab back where it was and open the page in its own tab.
     if (pushed && Date.now() > tab.ignoreNavUntil && rules.isSitePage(before) && !tab.untouched &&
-        ((key && key !== keyOf(before)) || leavesPin(url))) {
+        (otherItem(tab, url, before) || leavesPin(tab, url))) {
       tab.ignoreNavUntil = Date.now() + 1500;
       // goToIndex rather than goBack: goBack skips entries a page added without a click.
       wc.navigationHistory.goToIndex(beforeIndex);
@@ -396,9 +431,8 @@ function onLinkClick(tab, url) {
   if (/^mailto:/i.test(url)) return () => openExternal(url);
   if (!/^https?:/i.test(url)) return null;
   if (!rules.isInApp(url)) return () => openExternal(url);
-  const key = keyOf(url);
-  if (key && key !== keyOf(tab.url)) return () => openUrl(url, { from: tab });
-  if (tab.pinned && rules.isSitePage(url) && pagePath(url) !== pagePath(tab.pinUrl)) {
+  if (otherItem(tab, url)) return () => openUrl(url, { from: tab });
+  if (leavesPin(tab, url)) {
     return () => openUrl(url, { from: tab, newTab: true });
   }
   return null;
@@ -417,22 +451,300 @@ function findOpen(key, self) {
     (key.startsWith(PIN) ? tabs.find((t) => t !== self && t.pinned && PIN + pagePath(t.pinUrl) === key) : undefined);
 }
 
+// ---------- light issue tabs (version 2) ----------
+
+// One page of the app's own shows whichever light tab is open; light tabs are just their address
+// and title. Their data comes from the site's API with your sign-in, kept here for a minute.
+let lightView = null;
+let lightReady = null; // resolves once the light page has loaded
+let jiraApi = null; // jira-api.js or gitlab-api.js, for the site
+const issueCache = new Map(); // issue key → { data, at }
+const issueFetches = new Map(); // issue key → fetch in progress
+const issueTitle = (d) => d.tabTitle || `[${d.key}] ${d.summary}`;
+
+const createItemApi = profile.id === 'gitlab' ? createGitlabApi : createJiraApi;
+const getItemApi = () =>
+  (jiraApi && jiraApi.site === site ? jiraApi : (jiraApi = createItemApi({ session: session.fromPartition(PARTITION), site })));
+
+function addLightTab(url, { index = tabs.length, activate = true, openerId = null, title = '' } = {}) {
+  const key = rules.lightKeyOf(url);
+  const cached = issueCache.get(key)?.data;
+  const tab = {
+    id: nextId++, view: null, light: true, url, title: cached ? issueTitle(cached) : title || key, favicon: null,
+    loading: false, openerId, loadedOnce: true, navIndex: 0, ignoreNavUntil: 0, untouched: false,
+    pinned: false, pinUrl: null, lastSeen: Date.now(), closing: false,
+  };
+  tabs.splice(Math.max(pinnedCount(), Math.min(index, tabs.length)), 0, tab);
+  if (activate || !activeId) activateTab(tab.id);
+  else sendState();
+  if (!cached) warmIssue(key);
+  return tab;
+}
+
+function getLightView() {
+  if (lightView && !lightView.webContents.isDestroyed()) return lightView;
+  lightView = new WebContentsView({
+    webPreferences: {
+      partition: LIGHT_PARTITION,
+      preload: path.join(__dirname, 'preload-light.js'),
+      contextIsolation: true,
+      sandbox: true,
+      spellcheck: true,
+    },
+  });
+  lightView.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#22272b' : '#ffffff');
+  lightView.setVisible(false);
+  win.contentView.addChildView(lightView);
+  const wc = lightView.webContents;
+  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+  wc.on('will-navigate', (event) => event.preventDefault());
+  wc.on('context-menu', (_e, params) => {
+    const tab = activeTab();
+    if (tab?.light) showContextMenu(tab, params, wc);
+  });
+  wc.on('found-in-page', (_e, result) => {
+    if (!findState || !activeTab()?.light) return;
+    findState.matches = result.matches;
+    findState.ordinal = result.activeMatchOrdinal;
+    sendState();
+  });
+  lightReady = wc.loadURL('jira-tabs-light://app/index.html').catch(() => {});
+  return lightView;
+}
+
+function showLight(tab) {
+  const view = getLightView();
+  const ready = lightReady;
+  ready.then(() => {
+    if (lightView === view && activeId === tab.id && tab.light) {
+      view.webContents.send('show', { key: rules.lightKeyOf(tab.url), url: tab.url, app: profile.name });
+    }
+  });
+}
+
+// The issue's data, from the cache when it's less than a minute old (unless `fresh`).
+async function fetchIssue(key, { fresh = false } = {}) {
+  const hit = issueCache.get(key);
+  if (hit && !fresh && Date.now() - hit.at < 60_000) return hit;
+  if (issueFetches.has(key)) return issueFetches.get(key);
+  const fetching = getItemApi().issue(key).then((data) => {
+    const entry = { data, at: Date.now() };
+    issueCache.set(key, entry);
+    while (issueCache.size > 100) issueCache.delete(issueCache.keys().next().value);
+    // Name the tabs showing it (and follow an issue that moved to another key).
+    for (const t of tabs) {
+      if (!t.light || rules.lightKeyOf(t.url) !== key) continue;
+      t.title = issueTitle(data);
+      if (String(data.id ?? data.key).toLowerCase() !== key.toLowerCase()) t.url = data.url;
+    }
+    sendState();
+    return entry;
+  }).finally(() => issueFetches.delete(key));
+  issueFetches.set(key, fetching);
+  return fetching;
+}
+const warmIssue = (key) => fetchIssue(key).catch(() => {});
+
+// A light tab becomes the real Jira or GitLab page, and back.
+// Its page may already be loaded (you pointed at a link to it, or at "Open full Jira").
+function makeFull(tab) {
+  if (!tab?.light) return;
+  const ready = takePreloaded(tab.url);
+  const view = ready?.view || createPageView();
+  const wc = view.webContents;
+  Object.assign(tab, {
+    light: false, view, loading: ready ? wc.isLoading() : true, loadedOnce: !!ready && !wc.isLoading(),
+    navIndex: ready ? wc.navigationHistory.getActiveIndex() : 0, ignoreNavUntil: 0,
+  });
+  if (ready) Object.assign(tab, { url: ready.url, title: ready.title || tab.title, favicon: ready.favicon });
+  wireTab(tab);
+  if (ready) {
+    wc.setBackgroundThrottling(!TEST);
+    wc.setAudioMuted(false);
+  } else {
+    wc.loadURL(tab.url).catch(() => {});
+  }
+  if (tab.id === activeId) {
+    layout();
+    view.webContents.focus();
+  }
+  sendState();
+}
+
+function makeLight(tab) {
+  if (!tab || tab.light || tab.pinned || tab.closing || !lightIssues || !rules.lightKeyOf(tab.url)) return;
+  if (tab.asleep) {
+    Object.assign(tab, { light: true, asleep: false, favicon: null });
+    if (tab.id === activeId) showLight(tab);
+    return sendState();
+  }
+  const wc = tab.view.webContents;
+  tab.closing = true;
+  // The page may ask to keep unsaved changes; then it stays as it is.
+  const kept = () => {
+    tab.closing = false;
+    wc.off('destroyed', gone);
+  };
+  const gone = () => {
+    wc.off('will-prevent-unload', kept);
+    detachView(tab.view);
+    Object.assign(tab, { light: true, view: null, loading: false, loadedOnce: true, closing: false, favicon: null });
+    if (tab.id === activeId) {
+      showLight(tab);
+      layout();
+      pageWc(tab)?.focus();
+    }
+    sendState();
+  };
+  wc.once('will-prevent-unload', kept);
+  wc.once('destroyed', gone);
+  wc.close({ waitForBeforeUnload: true });
+}
+
+function reloadTab(tab, { force = false } = {}) {
+  if (!tab) return;
+  if (tab.asleep) return activateTab(tab.id);
+  if (tab.light) {
+    issueCache.delete(rules.lightKeyOf(tab.url));
+    if (tab.id === activeId) pageWc(tab)?.send('command', 'refresh');
+  } else if (force) {
+    tab.view.webContents.reloadIgnoringCache();
+  } else {
+    tab.view.webContents.reload();
+  }
+}
+
+function setLightIssues(on) {
+  lightIssues = rules.canLight && on;
+  saveSettings();
+  buildMenu();
+}
+
+// The light view's files, and images from the Jira or GitLab site for it (fetched with your sign-in;
+// only images are passed on). The light view has no permissions and keeps nothing.
+const LIGHT_FILES = { '/index.html': 'text/html', '/light.css': 'text/css', '/light.js': 'text/javascript' };
+function serveLightView() {
+  const ses = session.fromPartition(LIGHT_PARTITION);
+  ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+  ses.setPermissionCheckHandler(() => false);
+  ses.protocol.handle('jira-tabs-light', (request) => {
+    const { pathname } = new URL(request.url);
+    const type = LIGHT_FILES[pathname];
+    if (!type) return new Response('Not found', { status: 404 });
+    return new Response(fs.readFileSync(path.join(__dirname, 'light', pathname.slice(1))), {
+      headers: { 'Content-Type': `${type}; charset=utf-8`, 'Cache-Control': 'no-store' },
+    });
+  });
+  ses.protocol.handle('site-media', async (request) => {
+    const u = new URL(request.url);
+    if (u.host !== 'site' || !site || request.method !== 'GET') return new Response(null, { status: 404 });
+    try {
+      const res = await getItemApi().media(u.pathname + u.search);
+      const type = res.headers.get('content-type') || '';
+      if (!res.ok || !/^image\//i.test(type)) return new Response(null, { status: res.ok ? 415 : res.status });
+      return new Response(res.body, {
+        headers: {
+          'Content-Type': type,
+          'Cache-Control': 'private, max-age=3600',
+          'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+          'X-Content-Type-Options': 'nosniff',
+        },
+      });
+    } catch {
+      return new Response(null, { status: 502 });
+    }
+  });
+}
+
+const fromLight = (event) => !!lightView && !lightView.webContents.isDestroyed() && event.sender === lightView.webContents;
+
+ipcMain.handle('light', async (event, name, arg) => {
+  if (!fromLight(event)) return { ok: false, error: 'Not allowed.' };
+  const key = String(arg?.key || '');
+  if (!rules.isLightKey(key) || !site) return { ok: false, error: 'That isn’t an issue key.' };
+  try {
+    switch (name) {
+      case 'issue': {
+        const { data, at } = await fetchIssue(key, { fresh: !!arg.fresh });
+        return { ok: true, data, at };
+      }
+      // GitLab's come with the item's data (null here).
+      case 'transitions': {
+        const api = getItemApi();
+        return { ok: true, data: api.transitions ? await api.transitions(key) : null };
+      }
+      case 'transition':
+        await getItemApi().transition(key, String(arg.id));
+        issueCache.delete(key);
+        return { ok: true };
+      case 'comment': {
+        const text = String(arg.text || '').slice(0, 32_000);
+        if (!text.trim()) return { ok: false, error: 'The comment is empty.' };
+        await getItemApi().comment(key, text);
+        issueCache.delete(key);
+        return { ok: true };
+      }
+      default:
+        return { ok: false, error: 'Unknown request.' };
+    }
+  } catch (err) {
+    return { ok: false, error: err.message, signedOut: !!err.signedOut };
+  }
+});
+
+// Links clicked in the light view follow the same rules as links in pages, except that nothing
+// replaces the light view itself: other pages of the site open in new tabs.
+ipcMain.on('light-open', (event, url, background) => {
+  if (!fromLight(event)) return;
+  const tab = activeTab();
+  if (/^mailto:/i.test(url)) return openExternal(url);
+  if (!/^https?:/i.test(url)) return;
+  if (!rules.isInApp(url)) return openExternal(url);
+  openUrl(url, { from: tab?.light ? tab : null, background: !!background, newTab: true });
+});
+ipcMain.on('light-full', (event) => {
+  if (fromLight(event) && activeTab()?.light) makeFull(activeTab());
+});
+ipcMain.on('light-hover', (event, url) => {
+  const tab = activeTab();
+  if (!fromLight(event) || !tab?.light) return;
+  if (url === null) preload(tab.url, tab, { self: true });
+  else if (typeof url === 'string') preload(url, tab);
+});
+ipcMain.on('light-copy', (event, text) => {
+  if (fromLight(event)) clipboard.writeText(String(text));
+});
+
 // ---------- loading issues before they're clicked ----------
 
 // Pointing at a link to an item that would open in a new tab starts loading it in a hidden page.
 // Clicking the link then turns that page into the tab, already loaded. At most PRELOAD_MAX at a
 // time; each is thrown away PRELOAD_KEEP_MS after you last pointed at its link.
+//
+// The light tab you're on also has its full page loaded, out of sight, so "Open full Jira" /
+// "Open full GitLab" shows it at once. That page is kept while you stay on the tab (it doesn't
+// count towards PRELOAD_MAX) and thrown away PRELOAD_KEEP_MS after you leave.
 const PRELOAD_MAX = 2;
 const PRELOAD_KEEP_MS = TEST ? 4000 : 60_000;
+const HOLD_DELAY_MS = TEST ? 300 : 1000; // the light view's own data comes first
 const preloaded = new Map(); // key -> { view, url, title, favicon, timer, unwire }
+let heldKey = null; // the full page kept for the light tab you're on
+let holdTimer = null;
 
-function preload(url, from) {
+// An item that opens as a light tab gets its data fetched as well, and its full page is loaded
+// too, so "Open full Jira" / "Open full GitLab" shows it at once. `self`: the light tab's own item
+// (pointing at its "Open full …" button).
+function preload(url, from, { self = false } = {}) {
   if (!win || !preloadLinks || !rules.isPreloadable(url)) return;
   const key = keyOf(url);
-  if (!key || key.startsWith(PIN) || key === keyOf(from.url) || findOpen(key, null)) return;
+  if (!key || key.startsWith(PIN)) return;
+  if (self ? !from.light || key !== keyOf(from.url) || findOpen(key, from) : key === keyOf(from.url) || findOpen(key, null)) return;
+  const issueKey = lightIssues && rules.lightKeyOf(url);
+  if (issueKey && !self) warmIssue(issueKey);
   const known = preloaded.get(key);
   if (known) return keepPreloaded(key, known);
-  if (preloaded.size >= PRELOAD_MAX) dropPreloaded(preloaded.keys().next().value);
+  const others = [...preloaded.keys()].filter((k) => k !== heldKey);
+  if (others.length >= PRELOAD_MAX) dropPreloaded(others[0]);
 
   const view = createPageView({ preloading: true });
   const { width, height } = win.getContentBounds();
@@ -452,6 +764,8 @@ function preload(url, from) {
   };
   wc.setWindowOpenHandler(() => ({ action: 'deny' }));
   wc.setAudioMuted(true);
+  // Once loaded, it's slowed down like any page out of sight.
+  if (!TEST) wc.once('did-stop-loading', () => !wc.isDestroyed() && wc.setBackgroundThrottling(true));
   preloaded.set(key, entry);
   keepPreloaded(key, entry);
   wc.loadURL(url).catch(() => {});
@@ -459,7 +773,28 @@ function preload(url, from) {
 
 function keepPreloaded(key, entry) {
   clearTimeout(entry.timer);
-  entry.timer = setTimeout(() => dropPreloaded(key), PRELOAD_KEEP_MS);
+  if (key !== heldKey) entry.timer = setTimeout(() => dropPreloaded(key), PRELOAD_KEEP_MS);
+}
+
+// Called whenever the tab you're on changes or shows another item: a light tab gets its full
+// page loaded (shortly, after its own data); the page held for the light tab you left is kept
+// for PRELOAD_KEEP_MS like any page loaded ahead.
+function holdFullPage(tab) {
+  const key = tab?.light ? keyOf(tab.url) : null;
+  clearTimeout(holdTimer);
+  if (heldKey && heldKey !== key) {
+    const left = heldKey;
+    heldKey = null;
+    const entry = preloaded.get(left);
+    if (entry) keepPreloaded(left, entry);
+  }
+  if (!key) return;
+  heldKey = key;
+  const known = preloaded.get(key);
+  if (known) return keepPreloaded(key, known);
+  holdTimer = setTimeout(() => {
+    if (activeTab() === tab && tab.light && keyOf(tab.url) === key) preload(tab.url, tab, { self: true });
+  }, HOLD_DELAY_MS);
 }
 
 // The page loaded ahead for this address, handed over to become a tab.
@@ -546,8 +881,10 @@ function activateTab(id, { flash = false } = {}) {
   tab.lastSeen = Date.now();
   activeId = id;
   if (tab.asleep) wakeTab(tab);
+  if (tab.light) showLight(tab);
+  holdFullPage(tab);
   layout();
-  if (!showingSetup) tab.view.webContents.focus();
+  if (!showingSetup) pageWc(tab)?.focus();
   if (flash) sendCommand('flash', id);
   sendState();
 }
@@ -594,10 +931,11 @@ function tidyTabs() {
   const due = (minutes, tab) => minutes > 0 && now - tab.lastSeen > minutes * 60_000;
   for (const tab of [...tabs]) {
     if (tab.id === activeId || tab.pinned || tab.closing) continue;
+    // Light tabs have no page to put to sleep: they just close.
     if (due(closeAfterMinutes, tab)) {
-      if (tab.asleep) removeTab(tab);
+      if (tab.asleep || tab.light) removeTab(tab);
       else unloadPage(tab, () => removeTab(tab));
-    } else if (!tab.asleep && due(sleepAfterMinutes, tab)) {
+    } else if (!tab.asleep && !tab.light && due(sleepAfterMinutes, tab)) {
       unloadPage(tab, () => sleptTab(tab));
     }
   }
@@ -680,6 +1018,8 @@ function moveTab(id, toIndex) {
 function setPinned(id, on) {
   const tab = tabById(id);
   if (!tab || tab.pinned === on || !rules.isInApp(tab.url)) return;
+  // Pinned tabs show the real page.
+  if (on && tab.light) makeFull(tab);
   tabs.splice(tabs.indexOf(tab), 1);
   if (on) {
     tab.pinUrl = tab.url.replace(/#.*$/, '');
@@ -700,11 +1040,17 @@ function setPinned(id, on) {
 function layout() {
   if (!win) return;
   const { width, height } = win.getContentBounds();
+  const bounds = { x: 0, y: TOP, width, height: Math.max(0, height - TOP) };
   for (const t of tabs) {
     if (!t.view) continue;
     const visible = t.id === activeId && !showingSetup;
     t.view.setVisible(visible);
-    if (visible) t.view.setBounds({ x: 0, y: TOP, width, height: Math.max(0, height - TOP) });
+    if (visible) t.view.setBounds(bounds);
+  }
+  if (lightView && !lightView.webContents.isDestroyed()) {
+    const visible = !!activeTab()?.light && !showingSetup;
+    lightView.setVisible(visible);
+    if (visible) lightView.setBounds(bounds);
   }
 }
 
@@ -725,7 +1071,7 @@ function signInTarget() {
   const focused = BrowserWindow.getFocusedWindow();
   if (focused && focused !== win && focused.getParentWindow() === win) return focused.webContents;
   const tab = activeTab();
-  return tab && !showingSetup ? tab.view.webContents : null;
+  return tab && !showingSetup ? tab.view?.webContents || null : null;
 }
 
 function chooseSignIn(items) {
@@ -786,7 +1132,27 @@ function go(text) {
     if (tab?.untouched) closeTab(tab.id, { remember: false });
     return;
   }
-  if (!tab || tab.pinned) return openUrl(url, { from: tab, newTab: true });
+  // An issue opens as a light tab: in the light tab you're on, in place of a new empty tab, or
+  // next to the page you're on.
+  if (lightIssues && rules.lightKeyOf(url)) {
+    if (tab?.light) {
+      tab.url = url;
+      const cached = issueCache.get(rules.lightKeyOf(url))?.data;
+      tab.title = cached ? issueTitle(cached) : rules.lightKeyOf(url);
+      showLight(tab);
+      holdFullPage(tab);
+      if (!cached) warmIssue(rules.lightKeyOf(url));
+      pageWc(tab)?.focus();
+      return sendState();
+    }
+    if (tab?.untouched) {
+      addTab(url, { index: tabs.indexOf(tab) + 1 });
+      return closeTab(tab.id, { remember: false });
+    }
+    return openUrl(url, { from: tab, newTab: true });
+  }
+  // Other pages can't show in the light view.
+  if (!tab || tab.pinned || tab.light) return openUrl(url, { from: tab, newTab: true });
   tab.untouched = false;
   tab.view.webContents.loadURL(url).catch(() => {});
   tab.view.webContents.focus();
@@ -800,7 +1166,7 @@ function goHome() {
 
 function history(dir) {
   const tab = activeTab();
-  if (!tab) return;
+  if (!tab?.view) return;
   const h = tab.view.webContents.navigationHistory;
   tab.ignoreNavUntil = Date.now() + 1500;
   if (dir < 0 && h.canGoBack()) h.goBack();
@@ -808,22 +1174,22 @@ function history(dir) {
 }
 
 function find(text, { forward = true, findNext = false } = {}) {
-  const tab = activeTab();
-  if (!tab) return;
+  const wc = pageWc(activeTab());
+  if (!wc) return;
   if (!text) return stopFind(false);
   findState = { text, matches: findState?.matches ?? 0, ordinal: findState?.ordinal ?? 0 };
-  tab.view.webContents.findInPage(text, { forward, findNext });
+  wc.findInPage(text, { forward, findNext });
   sendState();
 }
 
 function stopFind(close = true) {
-  activeTab()?.view.webContents.stopFindInPage('keepSelection');
+  pageWc(activeTab())?.stopFindInPage('keepSelection');
   findState = close ? null : { text: '', matches: 0, ordinal: 0 };
   sendState();
 }
 
 function zoom(delta) {
-  const wc = activeTab()?.view.webContents;
+  const wc = pageWc(activeTab());
   if (!wc) return;
   wc.setZoomLevel(delta === 0 ? 0 : Math.max(-5, Math.min(5, wc.getZoomLevel() + delta)));
 }
@@ -862,7 +1228,7 @@ function setSite(input) {
 function sendState() {
   if (!win || !uiReady) return;
   const tab = activeTab();
-  const h = tab?.view.webContents.navigationHistory;
+  const h = tab?.view?.webContents.navigationHistory;
   win.webContents.send('state', {
     site,
     profile: {
@@ -888,6 +1254,7 @@ function sendState() {
       loading: t.loading,
       pinned: t.pinned,
       asleep: !!t.asleep,
+      light: !!t.light,
       item: rules.labelOf(t.url),
     })),
   });
@@ -911,21 +1278,23 @@ ipcMain.on('ui', (event, name, arg) => {
     case 'reopen': return reopenClosed();
     case 'back': return history(-1);
     case 'forward': return history(1);
-    case 'reload': return tab?.view.webContents.reload();
-    case 'stop': return tab?.view.webContents.stop();
+    case 'reload': return reloadTab(tab);
+    case 'stop': return tab?.view?.webContents.stop();
     case 'go': return go(String(arg || ''));
     case 'home': return goHome();
     case 'open-in-browser': return tab?.url !== BLANK && tab && openExternal(tab.url, { handOff: false });
     case 'copy-link': return tab?.url !== BLANK && tab && clipboard.writeText(tab.url);
     case 'find': return find(String(arg?.text || ''), { forward: arg?.forward !== false, findNext: !!arg?.next });
     case 'stop-find': return stopFind();
-    case 'focus-page': return tab?.view.webContents.focus();
+    case 'focus-page': return pageWc(tab)?.focus();
     case 'set-site': return setSite(String(arg || ''));
     case 'cancel-setup': return site && showSetup(false);
     case 'test-close-after': return TEST && setCloseAfter(Number(arg));
     case 'test-sleep-after': return TEST && setSleepAfter(Number(arg));
     case 'test-preload': return TEST && setPreloadLinks(!!arg);
-    case 'test-fill': return TEST && fillSignIn(tab?.view.webContents, arg?.op);
+    case 'test-fill': return TEST && fillSignIn(tab?.view?.webContents, arg?.op);
+    case 'test-light': return TEST && setLightIssues(!!arg);
+    case 'test-toggle-light': return TEST && tab && (tab.light ? makeFull(tab) : makeLight(tab));
     default:
   }
 });
@@ -939,7 +1308,9 @@ function showTabMenu(id) {
   const right = tabs.slice(tabs.indexOf(tab) + 1).filter((t) => !t.pinned);
   Menu.buildFromTemplate([
     { label: tab.pinned ? 'Unpin Tab' : 'Pin Tab', enabled: rules.isInApp(tab.url), click: () => setPinned(id, !tab.pinned) },
-    { label: 'Reload', click: () => (tab.view ? tab.view.webContents.reload() : activateTab(id)) },
+    ...(tab.light ? [{ label: `Open in Full ${profile.name}`, click: () => makeFull(tab) }]
+      : lightIssues && !tab.pinned && rules.lightKeyOf(tab.url) ? [{ label: 'Show Light View', click: () => makeLight(tab) }] : []),
+    { label: 'Reload', click: () => reloadTab(tab) },
     { label: 'Copy Link', enabled: tab.url !== BLANK, click: () => clipboard.writeText(tab.url) },
     { label: 'Open in Browser', enabled: tab.url !== BLANK, click: () => openExternal(tab.url, { handOff: false }) },
     { type: 'separator' },
@@ -949,8 +1320,7 @@ function showTabMenu(id) {
   ]).popup({ window: win });
 }
 
-function showContextMenu(tab, p) {
-  const wc = tab.view.webContents;
+function showContextMenu(tab, p, wc = tab.view.webContents) {
   const items = [];
   if (p.linkURL && /^https?:/i.test(p.linkURL)) {
     if (rules.isInApp(p.linkURL)) {
@@ -1022,6 +1392,13 @@ function buildMenu() {
   const preloadItem = rules.canPreload
     ? [{ label: profile.preloadLabel, type: 'checkbox', checked: preloadLinks, click: (item) => setPreloadLinks(item.checked) }]
     : [];
+  if (rules.canLight) {
+    preloadItem.push({ label: profile.lightLabel, type: 'checkbox', checked: lightIssues, click: (item) => setLightIssues(item.checked) });
+  }
+  const lightToggle = rules.canLight
+    ? [{ label: `Switch Between Light View and Full ${profile.name}`, accelerator: 'CmdOrCtrl+Shift+J', click: onTab((t) => (t.light ? makeFull(t) : makeLight(t))) },
+      { type: 'separator' }]
+    : [];
   const template = [
     ...(IS_MAC ? [{
       label: app.name,
@@ -1070,8 +1447,9 @@ function buildMenu() {
     {
       label: 'View',
       submenu: [
-        { label: 'Reload', accelerator: 'CmdOrCtrl+R', click: onTab((t) => t.view.webContents.reload()) },
-        { label: 'Force Reload', accelerator: 'CmdOrCtrl+Shift+R', click: onTab((t) => t.view.webContents.reloadIgnoringCache()) },
+        ...lightToggle,
+        { label: 'Reload', accelerator: 'CmdOrCtrl+R', click: onTab((t) => reloadTab(t)) },
+        { label: 'Force Reload', accelerator: 'CmdOrCtrl+Shift+R', click: onTab((t) => reloadTab(t, { force: true })) },
         { type: 'separator' },
         { label: 'Actual Size', accelerator: 'CmdOrCtrl+0', click: () => zoom(0) },
         { label: 'Zoom In', accelerator: 'CmdOrCtrl+=', click: () => zoom(0.5) },
@@ -1079,7 +1457,7 @@ function buildMenu() {
         { label: 'Zoom Out', accelerator: 'CmdOrCtrl+-', click: () => zoom(-0.5) },
         { type: 'separator' },
         { role: 'togglefullscreen' },
-        { label: 'Developer Tools for This Page', accelerator: IS_MAC ? 'Alt+Cmd+I' : 'Ctrl+Shift+I', click: onTab((t) => t.view.webContents.toggleDevTools()) },
+        { label: 'Developer Tools for This Page', accelerator: IS_MAC ? 'Alt+Cmd+I' : 'Ctrl+Shift+I', click: onTab((t) => pageWc(t)?.toggleDevTools()) },
       ],
     },
     {
@@ -1184,6 +1562,7 @@ if (!app.requestSingleInstanceLock()) {
     const allowed = new Set(['clipboard-sanitized-write', 'notifications', 'fullscreen']);
     ses.setPermissionRequestHandler((_wc, permission, callback) => callback(allowed.has(permission)));
     ses.setPermissionCheckHandler((_wc, permission) => allowed.has(permission));
+    serveLightView();
     buildMenu();
     createWindow();
     setInterval(tidyTabs, TEST ? 500 : 30_000);
