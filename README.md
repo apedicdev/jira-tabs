@@ -8,6 +8,8 @@ Ways to work in Jira (and Confluence, and GitLab) with one tab per issue:
 | [`extension/`](extension/README.md) | **Chrome extension** for Jira in Chrome. Tabs inside an installed Jira app need experimental Chrome settings. | Chrome |
 | this folder | **Web app** with its own issue view, using the Jira API through a small local server | A Jira API token |
 
+Why the desktop apps: they open each issue, page or merge request once, switching to its tab instead of loading another copy, and they free the memory of tabs you aren't using. With about ten Jira tabs, that took memory from 3.6 GB to 645 MB. See [Why use it](desktop/README.md#why-use-it).
+
 The rest of this file is about the web app.
 
 ---

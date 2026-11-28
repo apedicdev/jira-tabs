@@ -7,6 +7,48 @@ Two apps built from the same code:
 
 Each app shows the real site and uses your normal login, so it needs no API token and no Chrome settings.
 
+## Why use it
+
+A Jira tab is one of the heaviest things a browser holds, and working in Jira in a browser tends to load it many times over. These apps load each issue, page or merge request once, and keep only the tabs you're using loaded.
+
+### One tab per item
+
+In a browser, clicking around Jira, Confluence or GitLab either replaces the page you were reading or opens yet another tab, and links from Slack or email add more. You end up with several copies of the same issue, each out of date with the others, mixed in with everything else.
+
+- **It recognises the item, not just the address.** All the links to one item lead to its one tab: a Jira issue and links to its comments; a Confluence page, its editor and old-style page links; a merge request's Overview and Changes; a GitLab issue and its work-item link.
+- **Already open means switch.** Wherever the link comes from, an item that's open brings its tab forward instead of opening a duplicate. That covers links in pages, the address box, typed keys such as `ABC-123` or `group/project!12`, links from other apps, and links passed between Jira Tabs and GitLab Tabs.
+- **An item never replaces the page you're on.** A link to another issue opens next to the current tab, so you keep your place. Boards, filters and pipelines open in the same tab as usual.
+- **Pinned tabs act as home.** Jira's *For you* always stays on its own page.
+
+Every duplicate avoided is a whole copy of Jira that isn't loaded, which is also the biggest saving below.
+
+### Performance
+
+Measured on a Mac with about ten Jira tabs:
+
+| | Memory |
+|---|---|
+| One open Jira issue page | 330–440 MB, in its own process |
+| About ten tabs, all loaded | 3.6 GB in 16 processes |
+| The same tabs after reopening, with sleeping tabs | 645 MB in 4 processes |
+
+How the apps keep it down:
+
+1. **No duplicate tabs**, as above.
+2. **Sleeping tabs:** after 5 minutes unused, a tab's page is closed but the tab stays in the strip; opening it reloads it in a second or two.
+3. **Closing unused tabs** after 10 minutes; ⇧⌘T brings them back.
+4. **Light start-up:** on launch only the tab you were on, and pinned tabs, load, not every saved tab.
+5. **Loading before you click:** pointing at an issue link starts loading it out of sight, and the click then shows that page without fetching it again. At most two load ahead at a time, each dropped after a minute.
+
+Limits:
+
+- A tab that's in use is as heavy as the same page in Chrome. The apps can't make Jira's own front end lighter, only avoid running more copies than you need.
+- A sleeping tab reloads when opened and starts back at the top. A page with unsaved changes is never put to sleep.
+- Issues you only pointed at may show up in Jira's *Recently viewed*.
+- Each app includes its own copy of Chromium, about 250 MB before any page.
+
+Sleeping, closing and loading ahead can each be changed or turned off in the app menu (see below).
+
 ## How the tabs work
 
 - **Every item gets one tab.** Items are:
