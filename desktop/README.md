@@ -9,6 +9,12 @@ Each app shows the real site and uses your normal login, so it needs no API toke
 
 Why use them, with memory measurements: see [Why use the desktop apps](../README.md#why-use-the-desktop-apps).
 
+![Jira Tabs showing an issue, with For you pinned, one tab per issue or Confluence page, and three tabs asleep](../docs/screenshots/jira-tabs.png)
+
+![GitLab Tabs showing a merge request, with tabs for an issue, another merge request and an epic, two of them asleep](../docs/screenshots/gitlab-tabs.png)
+
+*Both apps, shown with a demo site. Each issue, page, merge request or epic has one tab; dimmed tabs are asleep until you open them.*
+
 ## How the tabs work
 
 - **Every item gets one tab.** Items are:

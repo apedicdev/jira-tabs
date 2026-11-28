@@ -1,5 +1,9 @@
 # Jira Tabs
 
+![Jira Tabs showing an issue, with For you pinned at the left, one tab per issue or Confluence page, and three tabs asleep (dimmed)](docs/screenshots/jira-tabs.png)
+
+*Jira Tabs, shown with a demo site. **For you** is pinned at the left; every issue or Confluence page has one tab; the dimmed tabs are asleep, with their memory freed until you open them.*
+
 Ways to work in Jira (and Confluence, and GitLab) with one tab per issue:
 
 | Folder | What it is | Needs |
